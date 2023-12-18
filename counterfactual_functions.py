@@ -32,35 +32,36 @@ def create_basic_files(input_path):
     fill = 1e31
 
     if not os.path.exists(f'{input_path}dem.map'):
+        #Todo: change to Python function
         os.system(
             f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif {input_path}dem.map'
         )
 
     if not os.path.exists(f'{input_path}dem_filled.map'):
+        print('Filling DEM')
         pcr.setclone(f'{input_path}dem.map')
         dem = pcr.readmap(f'{input_path}dem.map')
-        print('Creating filled DEM')
         dem_filled = pcr.lddcreatedem(dem, fill, fill, fill, fill)
-        pcr.report(dem_filled, f'{input_path}dem_filled.map')
+        pcr.report(dem_filled, f'{input_path}generated/dem_filled.map')
 
-    if not os.path.exists(f'{input_path}flowdir.map'):
+    if not os.path.exists(f'{input_path}generated/flowdir.map'):
         print('Creating flow direction grid')
-        pcr.setclone(f'{input_path}dem_filled.map')
-        dem = pcr.readmap(f'{input_path}dem_filled.map')
+        pcr.setclone(f'{input_path}generated/dem_filled.map')
+        dem = pcr.readmap(f'{input_path}generated/dem_filled.map')
         flowdir = pcr.lddcreate(dem, fill, fill, fill, fill)
-        pcr.report(flowdir, f'{input_path}flowdir.map')
+        pcr.report(flowdir, f'{input_path}generated/flowdir.map')
 
-    if not os.path.exists(f'{input_path}accu.map'):
+    if not os.path.exists(f'{input_path}generated/accu.map'):
         print('Creating accumulation grid')
         pcr.setclone(f'{input_path}dem.map')
-        flowdir = pcr.readmap(f'{input_path}flowdir.map')
+        flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
         accu = pcr.accuflux(flowdir, 1)
-        pcr.report(accu, f'{input_path}accu.map')
+        pcr.report(accu, f'{input_path}generated/accu.map')
 
-    if not os.path.exists(f'{input_path}subbasins.gpkg'):
+    if not os.path.exists(f'{input_path}generated/subbasins.gpkg'):
         print("Creating subbasin shape file and raster")
-        accu = pcr.readmap(f'{input_path}accu.map')
-        flowdir = pcr.readmap(f'{input_path}flowdir.map')
+        accu = pcr.readmap(f'{input_path}generated/accu.map')
+        flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
 
         s_order = get_stream_order(input_path, save=True)
         outlets, outlet_array = create_outlet_raster(s_order, accu)
@@ -69,25 +70,26 @@ def create_basic_files(input_path):
         subbasins_raster, outlets, size_df = remove_small_subbasins(
             subbasins, flowdir, outlet_array, thresh=700)
 
-        pcr.report(outlets, f'{input_path}outlets.map')
-        pcr.report(subbasins_raster, f'{input_path}subbasins_adjusted.map')
+        pcr.report(outlets, f'{input_path}generated/outlets.map')
+        pcr.report(subbasins_raster, f'{input_path}generated/subbasins_adjusted.map')
 
+        #change to Python function
         os.system(
-            f'gdal_polygonize.py {input_path}subbasins_adjusted.map -f "GPKG" {input_path}subbasins_first.gpkg'
+            f'gdal_polygonize.py {input_path}generated/subbasins_adjusted.map -f "GPKG" {input_path}generated/subbasins_first.gpkg'
         )
-        subs = gpd.read_file(f'{input_path}subbasins_first.gpkg')
+        subs = gpd.read_file(f'{input_path}generated/subbasins_first.gpkg')
         subs['geometry'] = subs.buffer(0)  # this fixes the geometries
         subs = subs.dissolve(by="DN")  # join single part polygons with same ID
         subs = subs.loc[1:, :]
         subs = subs.set_crs("epsg:3035", allow_override=True)
-        subs.to_file(f"{input_path}subbasins.gpkg")
+        subs.to_file(f"{input_path}generated/subbasins.gpkg")
 
-        os.remove(f'{input_path}subbasins_first.gpkg')
+        os.remove(f'{input_path}generated/subbasins_first.gpkg')
 
-    if not os.path.exists(f'{input_path}friction_maidment.map'):
-        dem_filled = pcr.readmap(f'{input_path}dem_filled.map')
-        accu = pcr.readmap(f'{input_path}accu.map')
-        subbasin_raster = pcr.readmap(f'{input_path}subbasins_adjusted.map')
+    if not os.path.exists(f'{input_path}generated/friction_maidment.map'):
+        dem_filled = pcr.readmap(f'{input_path}generated/dem_filled.map')
+        accu = pcr.readmap(f'{input_path}generated/accu.map')
+        subbasin_raster = pcr.readmap(f'{input_path}generated/subbasins_adjusted.map')
         print("Making maidment friction map")
         slopearea = make_slopearea_raster(dem_filled, accu, input_path)
         make_friction_map(subbasin_raster,
@@ -96,13 +98,13 @@ def create_basic_files(input_path):
                           lower_limit=0.06,
                           upper_limit=3)
 
-    if not os.path.exists(f'{input_path}tt_complete.map'):
+    if not os.path.exists(f'{input_path}generated/tt_complete.map'):
 
-        pcr.setclone(f'{input_path}dem_filled.map')
-        flowdir = pcr.readmap(f'{input_path}flowdir.map')
-        outlets = pcr.readmap(f'{input_path}outlets.map')
+        pcr.setclone(f'{input_path}generated/dem_filled.map')
+        flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
+        outlets = pcr.readmap(f'{input_path}generated/outlets.map')
         friction = pcr.readmap(
-            f'{input_path}friction_maidment.map')
+            f'{input_path}generated/friction_maidment.map')
 
         outlets_vals = pcr.pcr2numpy(outlets, -99)
 
@@ -115,12 +117,12 @@ def create_basic_files(input_path):
         print(f"{datetime.datetime.now()} Starting traveltime")
         tt_complete = pcr.ldddist(flowdir, outlet_raster, friction)
         tt_complete = tt_complete / 60
-        pcr.report(tt_complete, f'{input_path}tt_complete.map')
-        print(f"{datetime.datetime.now()} Traveltime complete")
+        pcr.report(tt_complete, f'{input_path}generated/tt_complete.map')
+        print(f"{datetime.datetime.now()} Traveltime raster complete")
 
     if not os.path.exists(
-            f'{input_path}soil_landuse_classes.gpkg'):
-        print(f"{datetime.datetime.now()}Creating soil landuse shape file for curve number method")
+            f'{input_path}generated/soil_landuse_classes.gpkg'):
+        print(f"{datetime.datetime.now()} Creating soil landuse shape file for curve number method")
         make_cn_soil_landuse_shapefile(input_path)
 
 
@@ -139,7 +141,7 @@ def make_slopearea_raster(dem, accu, input_path):
     slopefraction = pcr.slope(dem)
     slopearea = ((slopefraction * 100)**a) * (accu**b)
 
-    pcr.report(slopearea, f'{input_path}slopearea.map')
+    pcr.report(slopearea, f'{input_path}generated/slopearea.map')
 
     return slopearea
 
@@ -160,8 +162,9 @@ def make_friction_map(basin_raster, slopearea, input_path,
     '''
 
     basins_nominal = pcr.nominal(basin_raster)
+    #get the average slopearea for each subbasin
     mean_slopearea = pcr.areaaverage(slopearea, basins_nominal)
-    pcr.report(mean_slopearea, f"{input_path}mean_slopearea.map")
+    pcr.report(mean_slopearea, f"{input_path}generated/mean_slopearea.map")
 
     v_unlimited = 0.1 * (slopearea / mean_slopearea)
 
@@ -173,7 +176,7 @@ def make_friction_map(basin_raster, slopearea, input_path,
 
     friction = 1 / v_limited
 
-    pcr.report(friction, f"{input_path}friction_maidment.map")
+    pcr.report(friction, f"{input_path}generated/friction_maidment.map")
 
 
 def make_cn_soil_landuse_shapefile(input_path):
@@ -191,7 +194,6 @@ def make_cn_soil_landuse_shapefile(input_path):
 
     soils_shape = gpd.read_file(
         f'{input_path}buek250_cn_classes.gpkg')
-    #ger_soils_shape = ger_soils_shape.to_crs("epsg:3035")
 
     cn_codes = pd.read_csv(f'{input_path}scs.csv',
                            sep='\t')
@@ -203,12 +205,11 @@ def make_cn_soil_landuse_shapefile(input_path):
 
     #intersect the two
     intersect = gpd.overlay(soils_shape, landuse, how="intersection")
-    print(intersect.columns)
     intersect = intersect.drop(
         ["SCHRAFFUR", "LAND", "NRKART", "SYM_NR", "leg"], axis=1)
 
     intersect["area km2"] = intersect.geometry.area / 1e6
-    intersect.to_file(f'{input_path}soil_landuse_classes.gpkg')
+    intersect.to_file(f'{input_path}generated/soil_landuse_classes.gpkg')
 
 
 
@@ -220,8 +221,8 @@ def get_stream_order(input_path, save=True):
     :return: pcraster._pcraster.Field containing the streams and their order
     '''
 
-    pcr.setclone(f'{input_path}flowdir.map')
-    flowdir = pcr.readmap(f'{input_path}flowdir.map')
+    pcr.setclone(f'{input_path}generated/flowdir.map')
+    flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
     s_order = pcr.streamorder(flowdir)
 
     max_s = pcr.mapmaximum(s_order)
@@ -231,10 +232,10 @@ def get_stream_order(input_path, save=True):
     if save:
         for order in range(5, max_s + 1):
             stream = pcr.ifthen(s_order == order, s_order)
-            pcr.report(stream, f"{input_path}stream_{order}.map")
+            pcr.report(stream, f"{input_path}generated/stream_{order}.map")
 
         streams_all = pcr.ifthen(s_order > 3, s_order)
-        pcr.report(streams_all, f"{input_path}streams_all.map")
+        pcr.report(streams_all, f"{input_path}generated/streams_all.map")
 
     return s_order
 
@@ -374,7 +375,7 @@ def remove_small_subbasins(subbasins, flowdir, outlet_array, thresh=700):
     sub_ids = sub_ids.flatten()
     sub_ids = list(set(sub_ids))
 
-    size_df = pd.DataFrame({'id': sub_ids, 'size_km2': 0})
+    size_df = pd.DataFrame({'id': sub_ids, 'size_km2': 0.0})
 
     # find small subbasins and remove the outlet points of these
     count = 0
@@ -382,7 +383,7 @@ def remove_small_subbasins(subbasins, flowdir, outlet_array, thresh=700):
 
     for id in sub_ids:
         size = np.count_nonzero(subs == id)
-        size_df.loc[size_df.id == id, "size_km2"] = (size * 25 * 25) / 1e6
+        size_df.loc[size_df.id == id, "size_km2"] = float((size * 25 * 25) / 1e6)
 
         if size < thresh:
             count = count + 1
