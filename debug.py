@@ -3,6 +3,30 @@ import geopandas as gpd
 import pcraster as pcr
 import os
 import numpy as np
+import rioxarray as rxr
+
+
+tt_46 = rxr.open_rasterio("output/basins/46/tt_46.tif", mask_and_scale=True)
+cf.get_giuh(tt_46, 46)
+
+#check if giuh_plot mit dem cluster raster auch so ein plot wird?
+#Liegt es evt. nur an der Plotfunktion, die ich auf dem Cluster gar nicht genuitzt hab?
+
+cf.hydrograph_and_cn_for_subbasins([46])
+
+
+cluster = rxr.open_rasterio("input/version/tt_46_cluster.tif", mask_and_scale=True)
+test = rxr.open_rasterio("input/version/tt_46_cluster.tif", masked=True)
+test = test.values[0, :, :]
+cluster = cluster.values[0, :, :]
+np.array_equal(cluster, test)
+
+dif = cluster -test
+
+local = tt_46.values[0, :, :]
+
+dif = cluster - local
+np.nanmin(dif)
 
 slopearea = pcr.readmap("/home/voit/GIUH/main_basins/ger/input/ger_slopearea.map")
 basin_raster = pcr.readmap("/home/voit/GIUH/main_basins/ger/input/subbasins_adjusted.map")
@@ -35,6 +59,3 @@ tt_complete = pcr.ldddist(flowdir, outlet_raster, friction)
 tt_complete = tt_complete / 60
 pcr.report(tt_complete, f'{input_path}generated/tt_complete.map')
 
-
-#clip traveltime raster on cluster
-gdal_translate -projwin 4077275.0 3055550.0 4117050.0 3019225.0 -of GTiff /home/voit/GIUH/main_basins/ger/input/tt_complete.map /tmp/processing_apxfSC/f970c7c9cec94acaade3eb0d7b4ca1c0/OUTPUT.tif

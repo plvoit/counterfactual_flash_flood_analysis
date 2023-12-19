@@ -114,11 +114,10 @@ def create_basic_files(input_path):
         position = position.astype(int)
         outlet_raster = pcr.numpy2pcr(pcr.Boolean, position, -99)
 
-        print(f"{datetime.datetime.now()} Starting traveltime")
+        print(f"{datetime.datetime.now()} Creating traveltime raster")
         tt_complete = pcr.ldddist(flowdir, outlet_raster, friction)
         tt_complete = tt_complete / 60
         pcr.report(tt_complete, f'{input_path}generated/tt_complete.map')
-        print(f"{datetime.datetime.now()} Traveltime raster complete")
 
     if not os.path.exists(
             f'{input_path}generated/soil_landuse_classes.gpkg'):
@@ -403,75 +402,6 @@ def remove_small_subbasins(subbasins, flowdir, outlet_array, thresh=700):
     return subbasins_new, outlets_new, size_df
 
 
-def get_giuh(subbasin_id, output_path, delta_t=15, plot=True):
-    '''
-    Classifies the traveltime raster and creates a unit hydrograph (time-area relationship).
-    The hydrograph is written to file. THis function depends on more global variables which are not explicitly passed
-    to the function. See traveltime.py.
-
-    :param subbasin_id: int, id of subbasin
-    :param output_path: str, path to store the output files
-    :param delta_t: int, class size in minutes
-    :param plot: plot (and save) the hydrographs
-    :return:
-    '''
-
-    tt = rxr.open_rasterio(
-        f'{output_path}traveltime/{subbasin_id}/tt_{subbasin_id}.tif')
-    tt_vals = tt.values
-    tt_vals_flat = tt_vals.flatten()
-    tt_vals_flat = tt_vals_flat[~np.isnan(tt_vals_flat)]
-
-    # cut of traveltimes larger than 5 days
-    tt_vals_flat = tt_vals_flat[tt_vals_flat <= 60 * 24 * 5]
-
-    max_bin = 60 * 24 * 5
-    bins = np.arange(0, max_bin, delta_t)
-    inds = np.digitize(tt_vals_flat, bins)
-
-    count_list = np.bincount(inds)
-
-    # transform to discharge (m3/s), cellsize 25mx25m, rain=1mm (l/m2/h) ????
-    count_list = (count_list * 25 * 25 * 1) / (delta_t * 60) / 1000  # 15 = dt
-
-    # write unit hydrograph to file
-    # #+ 15, so the first value is 15. This means that all values which arrive between 0 and 15 belong in this bin.
-    # similar to rainfall. The rainfall at 15:00 describes the rainfall from 14:00-15:00
-    # to achieve this the bin list has to be extended, because of the shift to the left
-    bins = bins[1:]
-    extend = np.array([bins[-1] + delta_t, bins[-1] + 2 * delta_t])
-    bins = np.concatenate([bins, extend])
-    hydrograph = pd.DataFrame({'delta_t': bins, 'discharge_m3/s': count_list})
-    hydrograph.to_csv(
-        f'{output_path}{subbasin_id}/hydrograph_{subbasin_id}.csv')
-
-    if plot:
-
-        if not os.path.exists(f'{output_path}giuh_plots'):
-            os.mkdir(f'{output_path}giuh_plots')
-
-        outlet_df = pd.read_csv(
-            f'{output_path}{subbasin_id}/outlet_{subbasin_id}.csv')
-        x_coord = outlet_df.loc[0, "x"]
-        y_coord = outlet_df.loc[0, "y"]
-
-        fig = plt.figure(figsize=(22, 10))
-        axs = fig.add_subplot(121)
-        # add data to plots
-        axs.plot(hydrograph['delta_t'], hydrograph['discharge_m3/s'])
-        axs.set_xlabel("time (min)")
-        axs.set_ylabel("discharge $m^3/s$")
-        axs.set_title("GIUH")
-        axs = fig.add_subplot(122)
-        basinplot = axs.imshow(tt_vals[0, :, :])
-        plt.title(f"Sub {subbasin_id}")
-        axs.scatter(x_coord, y_coord, s=150, marker="x", color="red")
-        fig.colorbar(basinplot, shrink=0.6)
-        axs.set_title("Traveltime to outlet (min)")
-        plt.savefig(f"{output_path}giuh_plots/{subbasin_id}_giuh.png")
-        plt.close()
-
-
 def flowdir_to_coord(flowdir_val):
     '''
     Translates the flowdirection of a cell to a vector. If this vector is added to the
@@ -503,3 +433,216 @@ def flowdir_to_coord(flowdir_val):
         print("Attention, outlet is a pit!")
 
     return index
+
+
+
+####This is the clip to subbasins bit
+
+
+def make_cn_calculator():
+    '''
+    Builds a calculator, which is able to calculate the correct curve number for soil moisture class 1 and three 3
+    any curve number for soil moisture class 2.
+    :return: dictionary, CN-calculator
+    '''
+    sm_classes = pd.read_csv(f'input/cn_sm_classes.csv')
+    fit1 = np.polyfit(sm_classes["Soil moisture class 2"].to_numpy(),
+                      sm_classes["Soil moisture class 1"].to_numpy(), 2)
+    fit3 = np.polyfit(sm_classes["Soil moisture class 2"].to_numpy(),
+                      sm_classes["Soil moisture class 3"].to_numpy(), 2)
+
+    yfitted1 = np.poly1d(fit1)
+    yfitted3 = np.poly1d(fit3)
+
+    cn_calculator = {"1": yfitted1, "3": yfitted3}
+
+    return cn_calculator
+
+
+def make_outlet_df(tt_raster, subbasin_id):
+    '''
+
+    :param tt_raster: xarray.core.dataarray.DataArray, raster containing the traveltime (in minutes) to the outlet.
+    :param subbasin_id: int, subbasin to be processed
+    :return: writes the coordinates (inidices) of the outlet to file. This is needed later for hydrological modelling.
+    '''
+
+    try:
+        outlet_coords = np.where(tt_raster == 0)
+        outlet_df = pd.DataFrame({'y': [outlet_coords[1][0]], 'x': [outlet_coords[2][0]]})
+        outlet_df.to_csv(f'output/basins/{subbasin_id}/outlet_{subbasin_id}.csv', index=False)
+        return outlet_df
+    except:
+
+        print(f'Subbasin {subbasin_id} is an incomplete basin on the side and has no outlet.')
+        return None
+
+
+def get_giuh(tt_raster, subbasin_id, delta_t=15, plot=True):
+    '''
+    Calculates the hydrograph (GIUH) from the traveltime raster.
+    :param tt_raster: xarray.core.dataarray, raster containing the traveltime (in minutes) to the outlet
+    :param subbasin_id: int, id of subbasin to be processed
+    :param delta_t: int, temporal resolution of the hydrograph
+    :param plot: boolean, if true, generate plots
+    :return: Writes the hydrograph to output/basins/hydrograph_xx.csv
+             Writes the plot of the hydrograph to output/giuh_plots/xxx_giuh.png
+    '''
+
+    tt_vals = tt_raster.values
+    tt_vals_flat = tt_vals.flatten()
+    tt_vals_flat = tt_vals_flat[~np.isnan(tt_vals_flat)]
+
+    bins = np.arange(0, max(tt_vals_flat), delta_t)
+    inds = np.digitize(tt_vals_flat, bins)
+
+    count_list = np.bincount(inds)
+
+    # transform to discharge (m3/s), cellsize 25mx25m, rain=1mm
+    count_list = (count_list * 25 * 25 * 1) / (delta_t * 60) / 1000  # 15 = dt
+
+    # write unit hydrograph to file
+    # #+ 15, so the first value is 15. This means that all values which arrive between 0 and 15 belong in this bin.
+    # similar to rainfall. The rainfall at 15:00 describes the rainfall from 14:00-15:00
+    # to achieve this the bin list has to be extended, because of the shift to the left
+    bins = bins[1:]
+    extend = np.array([bins[-1] + delta_t, bins[-1] + 2 * delta_t])
+    bins = np.concatenate([bins, extend])
+    hydrograph = pd.DataFrame({'delta_t': bins[:len(count_list)], 'discharge_m3/s': count_list})
+    hydrograph["discharge_m3/s"] = hydrograph["discharge_m3/s"].round(2)
+    hydrograph.to_csv(f'output/basins/{subbasin_id}/hydrograph_{subbasin_id}.csv', index=False)
+
+    if plot:
+        if not os.path.exists('output/giuh_plots'):
+            os.mkdir('output/giuh_plots')
+
+        outlet_df = pd.read_csv(f'output/basins/{subbasin_id}/outlet_{subbasin_id}.csv')
+        x_coord = outlet_df.loc[0, "x"]
+        y_coord = outlet_df.loc[0, "y"]
+
+        fig = plt.figure(figsize=(14, 8))
+        axs = fig.add_subplot(121)
+        # add data to plots
+        axs.plot(hydrograph['delta_t'], hydrograph['discharge_m3/s'])
+        axs.set_xlabel("time (min)")
+        axs.set_ylabel("discharge $m^3/s$")
+        axs.set_title("GIUH")
+        axs = fig.add_subplot(122)
+        basinplot = axs.imshow(tt_vals[0, :, :])
+        plt.title(f"Sub {subbasin_id}")
+        axs.scatter(x_coord, y_coord, s=150, marker="x", color="red")
+        fig.colorbar(basinplot, shrink=0.6)
+        axs.set_title("Traveltime to outlet (min)")
+        plt.savefig(f"output/giuh_plots/{subbasin_id}_giuh.png", bbox_inches="tight")
+        plt.close()
+
+
+def get_cn_df(cn_sub, subbasin_id, cn_calculator):
+    '''
+    Calculates one curve number for the whole subbasin with the areal fraction in cn_sub. Then the according curve numbers
+    for soil moisture class 1 and 3 are calculated. The results are returned in a dataframe
+    :param cn_sub: geopandas.Dataframe, containing the soil-landuse classes for the subbasins
+    :param subbasin_id: int, subbasin to be processed
+    :param cn_calculator: dictionary, the curve number calculator generated with make_cn_calculator
+    :return: pandas.Dataframe, contains the curve numbers for all soil moisture classes for the subbasins.
+    '''
+
+    #merge areas with same curve number
+    cn_sub["CN"] = -99
+    for soil_class in ["A", "B", "C", "D"]:
+        cn_sub.loc[cn_sub.cn_soil_cl == soil_class,  ["CN", "CN_for_dissolve"]] = cn_sub.loc[cn_sub.cn_soil_cl == soil_class,  f"SCS_{soil_class}"].copy()
+
+    cn_sub = cn_sub.dissolve(by="CN_for_dissolve")
+    cn_sub = cn_sub[["CN", "geometry"]]
+    cn_sub["area_km2"] = cn_sub.area / 1e6
+
+    cn_sub.to_file(f'output/basins/{subbasin_id}/cn_{subbasin_id}.gpkg')
+
+    # make dataframe which contains the three CN for the whole basin (based on the areal fractions of the different
+    # landuse-soil classes), to read later when calculating the effective rainfall
+    cn_class_df = pd.DataFrame({"sub_id": [subbasin_id]})
+    cn_class_df["cn_sm_1"] = int(round((cn_calculator["1"](cn_sub.CN) * (
+                cn_sub["area_km2"] / cn_sub["area_km2"].sum())).sum(), 0))
+    cn_class_df["cn_sm_2"] = int(
+        round((cn_sub.CN * (cn_sub["area_km2"] / cn_sub["area_km2"].sum())).sum(), 0))
+    cn_class_df["cn_sm_3"] = int(round((cn_calculator["3"](cn_sub.CN) * (
+                cn_sub["area_km2"] / cn_sub["area_km2"].sum())).sum(), 0))
+
+    return cn_class_df
+
+
+def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
+    '''
+    Clip the traveltime, and the curve number shapefile to the individual subbasins contained in subbasin_list.
+    From the clipped traveltime raster the geomorphological instantenous unit hydrograph (GIUH) is computed and stored.
+    The coordinates of the subbasin outlet, as well as the curve number for the subbasin is stored together with the
+    hydrograph in output/basins/xxx.
+    The hydrographs are plotted and stored in output/giuh_plot.
+    A table of curve numbers for the al basins contained in basin_list is stored in
+    input/generated/CN_subbasins_table.csv
+    These files are needed later for hydrological modelling.
+    This function calls get_giuh and get_cn_df
+    :param subbasin_list: list, containing all subbasins to be processed
+    :param plot_giuh: boolean, whether to plot the hydrographs or not. Slows down the computation
+    :return: writes traveltime raster, hydrograph, outlet coordinates and curve for every individual subbasin in
+    output/basins/xxx.
+    Plots of the hydrographs are stored in output/giuh_plots.
+    Writes the curve number table for all subbasins in input/generated/CN_subbasins.table.csv
+    '''
+
+    tt_complete = rxr.open_rasterio('input/generated/tt_complete.map',
+                                    mask_and_scale=True)  # masked nodata to np.nan
+    tt_complete = tt_complete.rio.write_crs("EPSG:3035")
+
+    subs = gpd.read_file("input/generated/subbasins.gpkg")
+
+    cn_class_df = pd.DataFrame({"sub_id": [-99], "cn_sm_1": [-99], "cn_sm_2": [-99], "cn_sm_3": [-99]})
+
+    cn_calculator = make_cn_calculator()
+
+    if not os.path.exists("output"):
+        os.mkdir("output")
+
+    if not os.path.exists("output/basins"):
+        os.mkdir("output/basins")
+
+    for subbasin_id in subbasin_list:
+
+        print(f'Creating hydrograph for subbasin {subbasin_id}')
+        if os.path.exists(f'output/basins/{subbasin_id}'):
+            print(f'Files for subbasins {subbasin_id} already exist. Not generating new files.')
+            print('If you want to newly calculate the subbasin files, the old one have to be deleted first.')
+            continue
+
+        if not os.path.exists(f'output/basins/{subbasin_id}'):
+            os.mkdir(f'output/basins/{subbasin_id}')
+
+        mask = subs.loc[subs.DN == subbasin_id, :].copy()
+
+        #clip the traveltime raster for the subbasin
+        clipped = tt_complete.rio.clip(mask['geometry'])
+        clipped.rio.to_raster(f'output/basins/{subbasin_id}/tt_{subbasin_id}.tif')
+
+        # clip the soil-landuse classes for the subbasin
+        cn_sub = gpd.read_file('input/generated/soil_landuse_classes.gpkg',mask=mask['geometry'])
+        cn_sub = cn_sub.clip(mask["geometry"])
+
+        print(f"Writing outlet dataframe for subbasin {subbasin_id}")
+        outlet = make_outlet_df(clipped, subbasin_id)
+
+        if outlet is None:
+            continue
+
+        print(f'Calculating hydrograph for subbasin {subbasin_id}')
+        get_giuh(clipped, subbasin_id, plot_giuh)
+
+        print(f'Calculating curve number for subbasin {subbasin_id}')
+        cn_df = get_cn_df(cn_sub, subbasin_id, cn_calculator)
+
+        cn_class_df = pd.concat([cn_class_df, cn_df])
+
+    cn_class_df = cn_class_df.loc[cn_class_df.sub_id != -99, :]
+
+    print("Writing CN table for all basins.")
+    cn_class_df.to_csv(f'input/generated/CN_subbasins_table.csv', index=False)
+
