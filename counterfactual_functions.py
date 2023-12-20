@@ -34,7 +34,7 @@ def create_basic_files(input_path):
     if not os.path.exists(f'{input_path}dem.map'):
         #Todo: change to Python function
         os.system(
-            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif {input_path}dem.map'
+            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif {input_path}generated/dem.map'
         )
 
     if not os.path.exists(f'{input_path}dem_filled.map'):
