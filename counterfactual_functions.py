@@ -12,9 +12,9 @@ from scipy.signal import convolve2d
 import datetime
 import os
 import rioxarray as rxr
-import rasterio
 import geopandas as gpd
 from itertools import combinations
+import shutil
 
 
 def create_basic_files(input_path):
@@ -498,7 +498,7 @@ def get_giuh(tt_raster, subbasin_id, delta_t=15, plot=True):
 
     count_list = np.bincount(inds)
 
-    # transform to discharge (m3/s), cellsize 25mx25m, rain=1mm
+    # transform to discharge (m3/s), cellsize 25mx25m, rain=1mm (l/m2/h) ????
     count_list = (count_list * 25 * 25 * 1) / (delta_t * 60) / 1000  # 15 = dt
 
     # write unit hydrograph to file
@@ -508,9 +508,14 @@ def get_giuh(tt_raster, subbasin_id, delta_t=15, plot=True):
     bins = bins[1:]
     extend = np.array([bins[-1] + delta_t, bins[-1] + 2 * delta_t])
     bins = np.concatenate([bins, extend])
-    hydrograph = pd.DataFrame({'delta_t': bins[:len(count_list)], 'discharge_m3/s': count_list})
+    hydrograph = pd.DataFrame({
+        'delta_t': bins[:len(count_list)],
+        'discharge_m3/s': count_list
+    })
     hydrograph["discharge_m3/s"] = hydrograph["discharge_m3/s"].round(2)
-    hydrograph.to_csv(f'output/basins/{subbasin_id}/hydrograph_{subbasin_id}.csv', index=False)
+    hydrograph.to_csv(f'output/basins/{subbasin_id}/hydrograph_{subbasin_id}.csv',
+                      index=False)
+
 
     if plot:
         if not os.path.exists('output/giuh_plots'):
@@ -520,7 +525,7 @@ def get_giuh(tt_raster, subbasin_id, delta_t=15, plot=True):
         x_coord = outlet_df.loc[0, "x"]
         y_coord = outlet_df.loc[0, "y"]
 
-        fig = plt.figure(figsize=(14, 8))
+        fig = plt.figure(figsize=(22, 10))
         axs = fig.add_subplot(121)
         # add data to plots
         axs.plot(hydrograph['delta_t'], hydrograph['discharge_m3/s'])
@@ -535,7 +540,6 @@ def get_giuh(tt_raster, subbasin_id, delta_t=15, plot=True):
         axs.set_title("Traveltime to outlet (min)")
         plt.savefig(f"output/giuh_plots/{subbasin_id}_giuh.png", bbox_inches="tight")
         plt.close()
-
 
 def get_cn_df(cn_sub, subbasin_id, cn_calculator):
     '''
@@ -614,6 +618,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
             print('If you want to newly calculate the subbasin files, the old one have to be deleted first.')
             continue
 
+
         if not os.path.exists(f'output/basins/{subbasin_id}'):
             os.mkdir(f'output/basins/{subbasin_id}')
 
@@ -622,6 +627,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
         #clip the traveltime raster for the subbasin
         clipped = tt_complete.rio.clip(mask['geometry'])
         clipped.rio.to_raster(f'output/basins/{subbasin_id}/tt_{subbasin_id}.tif')
+
 
         # clip the soil-landuse classes for the subbasin
         cn_sub = gpd.read_file('input/generated/soil_landuse_classes.gpkg',mask=mask['geometry'])
@@ -634,7 +640,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
             continue
 
         print(f'Calculating hydrograph for subbasin {subbasin_id}')
-        get_giuh(clipped, subbasin_id, plot_giuh)
+        get_giuh(tt_raster=clipped, subbasin_id=subbasin_id, delta_t=15, plot=plot_giuh)
 
         print(f'Calculating curve number for subbasin {subbasin_id}')
         cn_df = get_cn_df(cn_sub, subbasin_id, cn_calculator)
@@ -646,3 +652,205 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
     print("Writing CN table for all basins.")
     cn_class_df.to_csv(f'input/generated/CN_subbasins_table.csv', index=False)
 
+
+def get_floworder():
+    '''
+    For each subbasin, it is checked into which subbasin it flows using the outlet, and the flow direction at this point.
+    Subbasins where the calculation of the traveltime was not succesful (these are usually subbasins which are on the
+    sides and situated in the buffer) are removed and a new shapefile ("subbasins_info.shp) is written.
+    Then the network is analysed: Subbasins which don't have an inflow are head basins and have the order "1". All the
+    basins which have as inflow just head catchments get the order "2" we iterate through this process until we found
+    the order of every subbasin. This order then will be used to superposition the unit hydrographs in the right order.
+
+    :return: writes a cleaned up shapefile and a dataframe ("flow_order.csv") which contains the floworder for all
+            subbasins.
+            writes a shapefile which contains all the flow order info for all the subbasins ("subbasins_info.gpkg")
+
+    '''
+
+    outlets = rxr.open_rasterio(f'input/generated/outlets.map')
+    subbasins = rxr.open_rasterio(f'input/generated/subbasins_adjusted.map')
+    subbasins_shape = gpd.read_file(f'input/generated/subbasins.gpkg')
+    flowdir = rxr.open_rasterio(f'input/generated/flowdir.map')
+    accu = rxr.open_rasterio(f'input/generated/accu.map')
+    flowdir_vals = flowdir.values[0, :, :]
+    outlet_vals = outlets.values[0, :, :]
+    sub_ids = subbasins_shape.DN.to_list()
+    df = pd.DataFrame({'sub_id': sub_ids, 'flows_to': 0, 'accu_at_outlet': 0, 'time_to_next_outlet': 0})
+    problematic_subs = []
+
+
+    for id in sub_ids:
+        print(f"Sub {id}")
+
+        outlet_loc = np.where(outlet_vals == id)
+        x_outlet = float(outlets.x[outlet_loc[1][0]])
+        y_outlet = float(outlets.y[outlet_loc[0][0]])
+
+        flowdir_at_outlet = flowdir_vals[outlet_vals == id]
+
+        flows_to_coordinate = flowdir_to_coord(flowdir_at_outlet)
+
+        x_inlet = x_outlet + flows_to_coordinate[0]
+        y_inlet = y_outlet + flows_to_coordinate[1]
+
+        flows_to = subbasins.sel(x=x_inlet, y=y_inlet).values[0]
+
+        if flows_to != 0:
+            next_basin = rxr.open_rasterio(f'output/basins/{flows_to}/tt_{flows_to}.tif')
+            next_basin_size = np.count_nonzero(subbasins[0, :, :].values == flows_to)
+
+            if next_basin.shape[1] * next_basin.shape[2] < 0.6 * next_basin_size:
+                print(f"Traveltime raster for Sub {flows_to} problematic")
+                tt_to_next_outlet = -999
+                problematic_subs.append(flows_to)
+            else:
+                tt_to_next_outlet = int(round(next_basin.sel(x=x_inlet, y=y_inlet).values[0], 0))
+        else:
+            next_basin = 0
+            tt_to_next_outlet = -999
+
+        df.loc[df.sub_id == id, 'flows_to'] = flows_to
+        df.loc[df.sub_id == id, 'accu_at_outlet'] = accu.sel(x=x_outlet, y=y_outlet).values[0]
+        df.loc[df.sub_id == id, 'time_to_next_outlet'] = tt_to_next_outlet
+
+    problematic_subs = list(set(problematic_subs))
+    print(f'Nr. Problematic subs: {len(problematic_subs)}')
+
+    # clean up shapefile and remove the problematic basins, which are mostly because of the buffer
+    sub_shape = gpd.read_file('input/generated/subbasins.gpkg')
+
+    # remove also the subbasins where the traveltime didn't work. these are usually within the buffer
+    print("Checking all the subbasins for their size. If 40 % NaN, we remove it")
+    for id in sub_ids:
+        basin = rxr.open_rasterio(f'output/basins/{id}/tt_{id}.tif')
+        basin_size = np.count_nonzero(subbasins[0, :, :].values == id)
+
+        if basin.shape[1] * basin.shape[2] < 0.6 * basin_size:
+            print(f"Traveltime raster for Sub {id} problematic")
+            problematic_subs.append(id)
+
+    sub_shape = sub_shape[~sub_shape['DN'].isin(problematic_subs)]
+
+    print("Writing cleaned up subbasin file")
+    print(f'Nr. Problematic subs: {len(problematic_subs)}')
+
+    sub_shape.to_file('input/generated/subbasins_cleaned.gpkg')
+
+    # this df also needs to be filtered with the problematic subs
+    df = df[~df['sub_id'].isin(problematic_subs)]
+
+    ## get the flow order
+    ## find the head basins
+    print("Getting floworder")
+    df.loc[:, "order"] = np.nan
+
+    sub_list = df.sub_id.values.tolist()
+
+    all_subs = set(sub_list)
+    with_inflow = set(df.flows_to.values.tolist())
+
+    head_catchments = all_subs - with_inflow
+    head_catchments = list(head_catchments)
+
+    # level 1 = head_catchments
+    df.loc[df.sub_id.isin(head_catchments), 'order'] = 1
+
+    df.inflow_basins = "0"
+
+    for i in range(len(df)):
+        sub_id = df.iloc[i, 0]
+        dummy = df.loc[df.flows_to == sub_id, "sub_id"].values.tolist()
+
+        if len(dummy) != 0:
+            df.loc[df.sub_id == sub_id, 'inflow_basins'] = str(dummy)
+
+    # get calculation order in loop:
+    # level 1 = head_catchments
+    df.loc[df.sub_id.isin(head_catchments), 'order'] = 1
+    upstream_complete = head_catchments
+
+    # find the ones which flow to themselves (pits)
+    for i in df.index:
+        if df.loc[i, 'sub_id'] == df.loc[i, 'flows_to']:
+            df.loc[i, 'order'] = -99
+            print(f'Subbasin {df.loc[i, "sub_id"]} contains a pit')
+
+    order = 2
+    order_list = [1]
+
+    while any(np.isnan(df.loc[:, 'order'].values)):
+
+        print(f'Order: {order}')
+
+        for i in range(len(df)):
+            sub_id = df.iloc[i, 0]
+            test = df.loc[df.sub_id == sub_id, 'inflow_basins'].values[0]
+
+            if not isinstance(test, str):
+                continue
+
+            if np.isnan(df.loc[df.sub_id == sub_id, 'order'].values[0]):
+
+                test = test.replace('[', '')
+                test = test.replace(']', '')
+                test = test.split(',')
+                test = [int(i) for i in test]
+
+                if all([i in upstream_complete for i in test]):
+                    df.loc[df.sub_id == sub_id, 'order'] = order
+
+            else:
+                continue
+
+        upstream_complete = df.loc[~np.isnan(df.order), 'sub_id'].values.tolist()
+        order_list.append(order)
+        order = order + 1
+        print(f'{np.count_nonzero(np.isnan(df.order.values))} subs remaining')
+
+    df.to_csv('input/generated/flow_order.csv', index=False)
+
+    mb = gpd.read_file(f'input/generated/subbasins_cleaned.gpkg')
+
+    sub_ids = mb.DN.to_list()
+
+    df = df.loc[df.sub_id.isin(sub_ids), :]
+
+    gdf = pd.merge(mb, df, left_on="DN", right_on="sub_id")
+    gdf.drop(columns=["DN"], inplace=True)
+    gdf["area_km2"] = round(gdf.area / 1e6, 2)
+    gdf["cum_upstream_area"] = gdf.area_km2
+
+    orders = list(set(gdf.order.to_list()))
+
+    res_list = list()
+    res_list.append(gdf.loc[gdf.order == 1, :])
+
+    #get the cumulated upstream area for each basin/outlet
+
+    for i in orders[1:]:
+        dummy = gdf.loc[gdf.order == i, :]
+        #dummy.cum_upstream_area = dummy.apply(calculate_upstream_area, axis=1)
+
+        for id in dummy.sub_id:
+
+            upstream_basins = dummy.loc[dummy.sub_id == id, "inflow_basins"].values[0]
+            upstream_basins = upstream_basins.strip('[')
+            upstream_basins = upstream_basins.strip(']')
+            upstream_basins = upstream_basins.split(', ')
+
+            area = dummy.loc[dummy.sub_id == id, "area_km2"].values[0]
+
+            for basin in upstream_basins:
+                try:
+                    area = area + gdf.loc[gdf.sub_id == int(basin), "cum_upstream_area"].values[0]
+                except:
+                    continue
+
+            gdf.loc[gdf.sub_id == id, "cum_upstream_area"] = area
+
+    gdf.to_file(f'input/generated/subbasins_info.gpkg')
+    os.remove(f'input/generated/subbasins_cleaned.gpkg')
+
+    just_table = gdf.drop("geometry", axis=1)
+    just_table.to_csv(f'input/generated/subbasins_info_table.csv')
