@@ -16,6 +16,9 @@ import geopandas as gpd
 from itertools import combinations
 import shutil
 
+#######################
+#Prepare basic rasters
+#######################
 
 def create_basic_files(input_path):
     '''
@@ -31,37 +34,37 @@ def create_basic_files(input_path):
 
     fill = 1e31
 
-    if not os.path.exists(f'{input_path}dem.map'):
+    if not os.path.exists(f'output/gis/dem.map'):
         #Todo: change to Python function
         os.system(
-            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif {input_path}generated/dem.map'
+            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif output/gis/dem.map'
         )
 
     if not os.path.exists(f'{input_path}dem_filled.map'):
         print('Filling DEM')
-        pcr.setclone(f'{input_path}dem.map')
-        dem = pcr.readmap(f'{input_path}dem.map')
+        pcr.setclone('output/gis/dem.map')
+        dem = pcr.readmap('output/gis/dem.map')
         dem_filled = pcr.lddcreatedem(dem, fill, fill, fill, fill)
-        pcr.report(dem_filled, f'{input_path}generated/dem_filled.map')
+        pcr.report(dem_filled, f'output/gis/dem_filled.map')
 
-    if not os.path.exists(f'{input_path}generated/flowdir.map'):
+    if not os.path.exists(f'output/gis/flowdir.map'):
         print('Creating flow direction grid')
-        pcr.setclone(f'{input_path}generated/dem_filled.map')
-        dem = pcr.readmap(f'{input_path}generated/dem_filled.map')
+        pcr.setclone(f'output/gis/dem_filled.map')
+        dem = pcr.readmap(f'output/gis/dem_filled.map')
         flowdir = pcr.lddcreate(dem, fill, fill, fill, fill)
-        pcr.report(flowdir, f'{input_path}generated/flowdir.map')
+        pcr.report(flowdir, f'output/gis/flowdir.map')
 
-    if not os.path.exists(f'{input_path}generated/accu.map'):
+    if not os.path.exists(f'output/gis/accu.map'):
         print('Creating accumulation grid')
-        pcr.setclone(f'{input_path}dem.map')
-        flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
+        pcr.setclone('output/gis/dem.map')
+        flowdir = pcr.readmap(f'output/gis/flowdir.map')
         accu = pcr.accuflux(flowdir, 1)
-        pcr.report(accu, f'{input_path}generated/accu.map')
+        pcr.report(accu, f'output/gis/accu.map')
 
-    if not os.path.exists(f'{input_path}generated/subbasins.gpkg'):
+    if not os.path.exists(f'output/gis/subbasins.gpkg'):
         print("Creating subbasin shape file and raster")
-        accu = pcr.readmap(f'{input_path}generated/accu.map')
-        flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
+        accu = pcr.readmap(f'output/gis/accu.map')
+        flowdir = pcr.readmap(f'output/gis/flowdir.map')
 
         s_order = get_stream_order(input_path, save=True)
         outlets, outlet_array = create_outlet_raster(s_order, accu)
@@ -70,26 +73,26 @@ def create_basic_files(input_path):
         subbasins_raster, outlets, size_df = remove_small_subbasins(
             subbasins, flowdir, outlet_array, thresh=700)
 
-        pcr.report(outlets, f'{input_path}generated/outlets.map')
-        pcr.report(subbasins_raster, f'{input_path}generated/subbasins_adjusted.map')
+        pcr.report(outlets, f'output/gis/outlets.map')
+        pcr.report(subbasins_raster, f'output/gis/subbasins_adjusted.map')
 
         #change to Python function
         os.system(
-            f'gdal_polygonize.py {input_path}generated/subbasins_adjusted.map -f "GPKG" {input_path}generated/subbasins_first.gpkg'
+            f'gdal_polygonize.py output/gis/subbasins_adjusted.map -f "GPKG" output/gis/subbasins_first.gpkg'
         )
-        subs = gpd.read_file(f'{input_path}generated/subbasins_first.gpkg')
+        subs = gpd.read_file(f'output/gis/subbasins_first.gpkg')
         subs['geometry'] = subs.buffer(0)  # this fixes the geometries
         subs = subs.dissolve(by="DN")  # join single part polygons with same ID
         subs = subs.loc[1:, :]
         subs = subs.set_crs("epsg:3035", allow_override=True)
-        subs.to_file(f"{input_path}generated/subbasins.gpkg")
+        subs.to_file(f"output/gis/subbasins.gpkg")
 
-        os.remove(f'{input_path}generated/subbasins_first.gpkg')
+        os.remove(f'output/gis/subbasins_first.gpkg')
 
-    if not os.path.exists(f'{input_path}generated/friction_maidment.map'):
-        dem_filled = pcr.readmap(f'{input_path}generated/dem_filled.map')
-        accu = pcr.readmap(f'{input_path}generated/accu.map')
-        subbasin_raster = pcr.readmap(f'{input_path}generated/subbasins_adjusted.map')
+    if not os.path.exists(f'output/gis/friction_maidment.map'):
+        dem_filled = pcr.readmap(f'output/gis/dem_filled.map')
+        accu = pcr.readmap(f'output/gis/accu.map')
+        subbasin_raster = pcr.readmap(f'output/gis/subbasins_adjusted.map')
         print("Making maidment friction map")
         slopearea = make_slopearea_raster(dem_filled, accu, input_path)
         make_friction_map(subbasin_raster,
@@ -98,13 +101,13 @@ def create_basic_files(input_path):
                           lower_limit=0.06,
                           upper_limit=3)
 
-    if not os.path.exists(f'{input_path}generated/tt_complete.map'):
+    if not os.path.exists(f'output/gis/tt_complete.map'):
 
-        pcr.setclone(f'{input_path}generated/dem_filled.map')
-        flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
-        outlets = pcr.readmap(f'{input_path}generated/outlets.map')
+        pcr.setclone(f'output/gis/dem_filled.map')
+        flowdir = pcr.readmap(f'output/gis/flowdir.map')
+        outlets = pcr.readmap(f'output/gis/outlets.map')
         friction = pcr.readmap(
-            f'{input_path}generated/friction_maidment.map')
+            f'output/gis/friction_maidment.map')
 
         outlets_vals = pcr.pcr2numpy(outlets, -99)
 
@@ -117,10 +120,10 @@ def create_basic_files(input_path):
         print(f"{datetime.datetime.now()} Creating traveltime raster")
         tt_complete = pcr.ldddist(flowdir, outlet_raster, friction)
         tt_complete = tt_complete / 60
-        pcr.report(tt_complete, f'{input_path}generated/tt_complete.map')
+        pcr.report(tt_complete, f'output/gis/tt_complete.map')
 
     if not os.path.exists(
-            f'{input_path}generated/soil_landuse_classes.gpkg'):
+            f'output/gis/soil_landuse_classes.gpkg'):
         print(f"{datetime.datetime.now()} Creating soil landuse shape file for curve number method")
         make_cn_soil_landuse_shapefile(input_path)
 
@@ -140,7 +143,7 @@ def make_slopearea_raster(dem, accu, input_path):
     slopefraction = pcr.slope(dem)
     slopearea = ((slopefraction * 100)**a) * (accu**b)
 
-    pcr.report(slopearea, f'{input_path}generated/slopearea.map')
+    pcr.report(slopearea, f'output/gis/slopearea.map')
 
     return slopearea
 
@@ -163,7 +166,7 @@ def make_friction_map(basin_raster, slopearea, input_path,
     basins_nominal = pcr.nominal(basin_raster)
     #get the average slopearea for each subbasin
     mean_slopearea = pcr.areaaverage(slopearea, basins_nominal)
-    pcr.report(mean_slopearea, f"{input_path}generated/mean_slopearea.map")
+    pcr.report(mean_slopearea, f"output/gis/mean_slopearea.map")
 
     v_unlimited = 0.1 * (slopearea / mean_slopearea)
 
@@ -175,7 +178,7 @@ def make_friction_map(basin_raster, slopearea, input_path,
 
     friction = 1 / v_limited
 
-    pcr.report(friction, f"{input_path}generated/friction_maidment.map")
+    pcr.report(friction, f"output/gis/friction_maidment.map")
 
 
 def make_cn_soil_landuse_shapefile(input_path):
@@ -208,7 +211,7 @@ def make_cn_soil_landuse_shapefile(input_path):
         ["SCHRAFFUR", "LAND", "NRKART", "SYM_NR", "leg"], axis=1)
 
     intersect["area km2"] = intersect.geometry.area / 1e6
-    intersect.to_file(f'{input_path}generated/soil_landuse_classes.gpkg')
+    intersect.to_file(f'output/gis/soil_landuse_classes.gpkg')
 
 
 
@@ -220,8 +223,8 @@ def get_stream_order(input_path, save=True):
     :return: pcraster._pcraster.Field containing the streams and their order
     '''
 
-    pcr.setclone(f'{input_path}generated/flowdir.map')
-    flowdir = pcr.readmap(f'{input_path}generated/flowdir.map')
+    pcr.setclone(f'output/gis/flowdir.map')
+    flowdir = pcr.readmap(f'output/gis/flowdir.map')
     s_order = pcr.streamorder(flowdir)
 
     max_s = pcr.mapmaximum(s_order)
@@ -231,10 +234,10 @@ def get_stream_order(input_path, save=True):
     if save:
         for order in range(5, max_s + 1):
             stream = pcr.ifthen(s_order == order, s_order)
-            pcr.report(stream, f"{input_path}generated/stream_{order}.map")
+            pcr.report(stream, f"output/gis/stream_{order}.map")
 
         streams_all = pcr.ifthen(s_order > 3, s_order)
-        pcr.report(streams_all, f"{input_path}generated/streams_all.map")
+        pcr.report(streams_all, f"output/gis/streams_all.map")
 
     return s_order
 
@@ -435,9 +438,9 @@ def flowdir_to_coord(flowdir_val):
     return index
 
 
-
-####This is the clip to subbasins bit
-
+#######################
+#Clip to subbasins
+#######################
 
 def make_cn_calculator():
     '''
@@ -583,7 +586,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
     hydrograph in output/basins/xxx.
     The hydrographs are plotted and stored in output/giuh_plot.
     A table of curve numbers for the al basins contained in basin_list is stored in
-    input/generated/CN_subbasins_table.csv
+    output/gis/CN_subbasins_table.csv
     These files are needed later for hydrological modelling.
     This function calls get_giuh and get_cn_df
     :param subbasin_list: list, containing all subbasins to be processed
@@ -591,14 +594,14 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
     :return: writes traveltime raster, hydrograph, outlet coordinates and curve for every individual subbasin in
     output/basins/xxx.
     Plots of the hydrographs are stored in output/giuh_plots.
-    Writes the curve number table for all subbasins in input/generated/CN_subbasins.table.csv
+    Writes the curve number table for all subbasins in output/gis/CN_subbasins.table.csv
     '''
 
-    tt_complete = rxr.open_rasterio('input/generated/tt_complete.map',
+    tt_complete = rxr.open_rasterio('output/gis/tt_complete.map',
                                     mask_and_scale=True)  # masked nodata to np.nan
     tt_complete = tt_complete.rio.write_crs("EPSG:3035")
 
-    subs = gpd.read_file("input/generated/subbasins.gpkg")
+    subs = gpd.read_file("output/gis/subbasins.gpkg")
 
     cn_class_df = pd.DataFrame({"sub_id": [-99], "cn_sm_1": [-99], "cn_sm_2": [-99], "cn_sm_3": [-99]})
 
@@ -630,7 +633,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
 
 
         # clip the soil-landuse classes for the subbasin
-        cn_sub = gpd.read_file('input/generated/soil_landuse_classes.gpkg',mask=mask['geometry'])
+        cn_sub = gpd.read_file('output/gis/soil_landuse_classes.gpkg',mask=mask['geometry'])
         cn_sub = cn_sub.clip(mask["geometry"])
 
         print(f"Writing outlet dataframe for subbasin {subbasin_id}")
@@ -650,7 +653,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
     cn_class_df = cn_class_df.loc[cn_class_df.sub_id != -99, :]
 
     print("Writing CN table for all basins.")
-    cn_class_df.to_csv(f'input/generated/CN_subbasins_table.csv', index=False)
+    cn_class_df.to_csv(f'output/gis/CN_subbasins_table.csv', index=False)
 
 
 def get_floworder():
@@ -668,11 +671,11 @@ def get_floworder():
 
     '''
 
-    outlets = rxr.open_rasterio(f'input/generated/outlets.map')
-    subbasins = rxr.open_rasterio(f'input/generated/subbasins_adjusted.map')
-    subbasins_shape = gpd.read_file(f'input/generated/subbasins.gpkg')
-    flowdir = rxr.open_rasterio(f'input/generated/flowdir.map')
-    accu = rxr.open_rasterio(f'input/generated/accu.map')
+    outlets = rxr.open_rasterio(f'output/gis/outlets.map')
+    subbasins = rxr.open_rasterio(f'output/gis/subbasins_adjusted.map')
+    subbasins_shape = gpd.read_file(f'output/gis/subbasins.gpkg')
+    flowdir = rxr.open_rasterio(f'output/gis/flowdir.map')
+    accu = rxr.open_rasterio(f'output/gis/accu.map')
     flowdir_vals = flowdir.values[0, :, :]
     outlet_vals = outlets.values[0, :, :]
     sub_ids = subbasins_shape.DN.to_list()
@@ -718,7 +721,7 @@ def get_floworder():
     print(f'Nr. Problematic subs: {len(problematic_subs)}')
 
     # clean up shapefile and remove the problematic basins, which are mostly because of the buffer
-    sub_shape = gpd.read_file('input/generated/subbasins.gpkg')
+    sub_shape = gpd.read_file('output/gis/subbasins.gpkg')
 
     # remove also the subbasins where the traveltime didn't work. these are usually within the buffer
     print("Checking all the subbasins for their size. If 40 % NaN, we remove it")
@@ -735,7 +738,7 @@ def get_floworder():
     print("Writing cleaned up subbasin file")
     print(f'Nr. Problematic subs: {len(problematic_subs)}')
 
-    sub_shape.to_file('input/generated/subbasins_cleaned.gpkg')
+    sub_shape.to_file('output/gis/subbasins_cleaned.gpkg')
 
     # this df also needs to be filtered with the problematic subs
     df = df[~df['sub_id'].isin(problematic_subs)]
@@ -808,9 +811,9 @@ def get_floworder():
         order = order + 1
         print(f'{np.count_nonzero(np.isnan(df.order.values))} subs remaining')
 
-    df.to_csv('input/generated/flow_order.csv', index=False)
+    df.to_csv('output/gis/flow_order.csv', index=False)
 
-    mb = gpd.read_file(f'input/generated/subbasins_cleaned.gpkg')
+    mb = gpd.read_file(f'output/gis/subbasins_cleaned.gpkg')
 
     sub_ids = mb.DN.to_list()
 
@@ -849,8 +852,15 @@ def get_floworder():
 
             gdf.loc[gdf.sub_id == id, "cum_upstream_area"] = area
 
-    gdf.to_file(f'input/generated/subbasins_info.gpkg')
-    os.remove(f'input/generated/subbasins_cleaned.gpkg')
+    gdf.to_file(f'output/gis/subbasins_info.gpkg')
+    os.remove(f'output/gis/subbasins_cleaned.gpkg')
 
     just_table = gdf.drop("geometry", axis=1)
-    just_table.to_csv(f'input/generated/subbasins_info_table.csv')
+    just_table.to_csv(f'output/gis/subbasins_info_table.csv')
+
+#######################
+#Extract rainfall data
+#######################
+
+
+
