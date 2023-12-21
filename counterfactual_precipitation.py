@@ -1,13 +1,15 @@
-import yaml
 import pandas as pd
-import pyproj
 import wradlib as wrl
 import geopandas as gpd
-from osgeo import osr
+import matplotlib.pyplot as plt
 import xarray as xr
 import numpy as np
 import os
 from shapely.geometry import box
+import pyproj
+from matplotlib.colors import BoundaryNorm
+from matplotlib.colorbar import ColorbarBase
+from shapely.geometry import Point
 
 #######################
 # extract from RADKLIM
@@ -171,6 +173,122 @@ def get_rainseries_from_radklim(subbasin_id, event_id, subbasins_radolanproj, or
     os.remove(
         f"output/basins/{subbasin_id}/dummy_{subbasin_id}_{event_id}.gpkg"
     )
+
+
+def plot_counterfactual(id):
+
+    radolanwkt = """PROJCS["Radolan Projection",
+        GEOGCS["Radolan Coordinate System",
+            DATUM["Radolan_Kugel",
+                SPHEROID["Erdkugel",6370040,0]],
+            PRIMEM["Greenwich",0,
+                AUTHORITY["EPSG","8901"]],
+            UNIT["degree",0.0174532925199433,
+                AUTHORITY["EPSG","9122"]]],
+        PROJECTION["Polar_Stereographic"],
+        PARAMETER["latitude_of_origin",90],
+        PARAMETER["central_meridian",10],
+        PARAMETER["scale_factor",0.933012701892],
+        PARAMETER["false_easting",0],
+        PARAMETER["false_northing",0],
+        UNIT["kilometre",1,
+            AUTHORITY["EPSG","9036"]],
+        AXIS["Easting",SOUTH],
+        AXIS["Northing",SOUTH]]
+    """
+
+    radolanproj = pyproj.CRS.from_wkt(radolanwkt)
+
+    ger = gpd.read_file("input/NUTS5000_N1.shp")
+    subbasins = gpd.read_file("output/gis/subbasins.gpkg")
+    ger.to_crs(radolanproj, inplace=True)
+    subbasins_radolanproj = subbasins.to_crs(radolanproj)
+
+
+    original_event = xr.open_dataset("input/nw_jul21.nc")
+    original_event = original_event.rainfall_amount
+
+    # get the coordinates of the centroid
+    t_max, y_max, x_max = np.argwhere(original_event.values == np.nanmax(original_event.values))[0]
+    centroid_x_coord = original_event.x[x_max].item()
+    centroid_y_coord = original_event.y[y_max].item()
+    original_centroid = (centroid_x_coord, centroid_y_coord)
+
+    fig, ax = plt.subplots(figsize=(10, 6), nrows=1, ncols=2)
+    ax = ax.flatten()
+
+    bb = tuple(ger.total_bounds.tolist())
+
+    maximum_rain = np.argwhere(original_event.values == np.nanmax(original_event.values))[0]
+    y_max = maximum_rain[1]
+    x_max = maximum_rain[2]
+    t_max = maximum_rain[0]
+
+    y_max_coord = original_event.y[y_max].values
+    x_max_coord = original_event.x[x_max].values
+
+    original_event = original_event.sum("time", skipna=True)
+
+    # Define class boundaries and labels
+    class_boundaries = [0, 10, 25, 50, 100, 150, 300]  # Example class boundaries
+    class_labels = ["$<10$", "$10-25$", "$25-50$", "$50-100$", "$100-150$", "$150>$"]  # Corresponding class labels
+
+    # Map the data values to their corresponding classes
+    classified_data = np.digitize(original_event.values, bins=class_boundaries, right=True)
+    classified_data = np.select([classified_data <= 0, classified_data >= len(class_labels)],
+                                [0, len(class_labels) - 1],
+                                default=classified_data)
+
+    original_event.values = classified_data
+
+    # cmap = get_cmap("inferno", len(class_labels))
+    cmap = plt.get_cmap(name="inferno", lut=len(class_labels))
+    # point of highest rainfall
+    centroid = gpd.GeoDataFrame(geometry=[Point(x_max_coord, y_max_coord)])
+    centroid.set_crs(radolanproj, inplace=True)
+    # centroid.to_crs("EPSG:25832", inplace=True)
+
+    original_event.plot.imshow(extent=bb, cmap=cmap, zorder=2, add_colorbar=False, add_labels=False, ax=ax[0])
+    ger.plot(ax=ax[0], edgecolor='black', color="None", linewidth=1, zorder=4)
+    subbasins_radolanproj.plot(ax=ax[0], zorder=5)
+    centroid.plot(ax=ax[0], color="lime", marker="x", markersize=80, zorder=6)
+
+    ax[0].set_xlim(bb[0], bb[2])
+    ax[0].set_ylim(bb[1], bb[3])
+    ax[0].set_title("NW/Jul21", fontsize=14)
+    ax[0].set_axis_off()
+
+    # shift the event
+    # get the coordinates of the centroid
+    centroid = subbasins_radolanproj.loc[subbasins_radolanproj.DN == id].centroid
+    event_counterfactual = move_event(original_event, centroid, original_centroid)
+
+    event_counterfactual.plot.imshow(extent=bb, cmap=cmap, zorder=2, add_colorbar=False, add_labels=False, ax=ax[1])
+    ger.plot(ax=ax[1], edgecolor='black', color="None", linewidth=1, zorder=4)
+    subbasins_radolanproj.plot(ax=ax[1], zorder=5)
+    centroid.plot(ax=ax[1], color="lime", marker="x", markersize=80, zorder=6)
+    ax[1].set_xlim(bb[0], bb[2])
+    ax[1].set_ylim(bb[1], bb[3])
+    ax[1].set_title(f"NW/Jul21_counterfactual_{id}", fontsize=14)
+    ax[1].set_axis_off()
+
+    cax = fig.add_axes([0.92, 0.15, 0.02, 0.7])  # Adjust the position and size as needed
+
+    # Create a BoundaryNorm for the colorbar
+    class_boundaries = [0, 10, 25, 50, 100, 150, 300]
+    class_labels = ["<10", "10-25", "25-50", "50-100", "100-150", ">150"]  # Corresponding class labels
+    # Calculate midpoints between class boundaries for tick positions
+    # tick_positions = [(class_boundaries[i] + class_boundaries[i+1]) / 2 for i in range(len(class_boundaries) - 1)]
+
+    # Add a colorbar
+    cmap = plt.get_cmap("inferno", len(class_labels))
+    norm = BoundaryNorm(class_boundaries, cmap.N)
+    # tick_positions
+    cbar = ColorbarBase(cax, cmap=cmap, ticks=class_boundaries[1:-1], norm=norm, extend="max")
+    # cbar.set_ticklabels(class_labels)
+
+    cbar.set_label('cumulated precipitation [mm]', rotation=90, labelpad=15)
+    plt.show()
 
 
 ##########################
