@@ -1,5 +1,5 @@
 '''
-Paul Voit 21 Nov 2022
+Paul Voit 21 Dec 2023
 THis version is written to work with GPKG-files to process Germany as a whole
 This script contains all the functions which are used in the workflow of deriving the hydrographs for subbasins
 '''
@@ -14,7 +14,7 @@ import os
 import rioxarray as rxr
 import geopandas as gpd
 from itertools import combinations
-import shutil
+from osgeo import gdal, ogr, osr
 
 #######################
 #Prepare basic rasters
@@ -34,16 +34,19 @@ def create_basic_files(input_path):
 
     fill = 1e31
 
-    if not os.path.exists(f'output/gis/dem.map'):
-        #Todo: change to Python function
+    if not os.path.exists(f'input/dem.map'):
+        print("DEM input/dem.map is missing. Cannot proceed.")
+        '''
+        In case you want to use other rasters you can convert them to PCRaster format like this:
         os.system(
-            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif output/gis/dem.map'
+            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem_{main_basin}.tif {input_path}dem_{main_basin}.map'
         )
+        '''
 
-    if not os.path.exists(f'{input_path}dem_filled.map'):
+    if not os.path.exists('output/gis/dem_filled.map'):
         print('Filling DEM')
-        pcr.setclone('output/gis/dem.map')
-        dem = pcr.readmap('output/gis/dem.map')
+        pcr.setclone('input/dem.map')
+        dem = pcr.readmap('input/dem.map')
         dem_filled = pcr.lddcreatedem(dem, fill, fill, fill, fill)
         pcr.report(dem_filled, f'output/gis/dem_filled.map')
 
@@ -56,7 +59,7 @@ def create_basic_files(input_path):
 
     if not os.path.exists(f'output/gis/accu.map'):
         print('Creating accumulation grid')
-        pcr.setclone('output/gis/dem.map')
+        pcr.setclone('input/dem.map')
         flowdir = pcr.readmap(f'output/gis/flowdir.map')
         accu = pcr.accuflux(flowdir, 1)
         pcr.report(accu, f'output/gis/accu.map')
@@ -76,10 +79,11 @@ def create_basic_files(input_path):
         pcr.report(outlets, f'output/gis/outlets.map')
         pcr.report(subbasins_raster, f'output/gis/subbasins_adjusted.map')
 
-        #change to Python function
+        #Polygons from raster
         os.system(
             f'gdal_polygonize.py output/gis/subbasins_adjusted.map -f "GPKG" output/gis/subbasins_first.gpkg'
         )
+
         subs = gpd.read_file(f'output/gis/subbasins_first.gpkg')
         subs['geometry'] = subs.buffer(0)  # this fixes the geometries
         subs = subs.dissolve(by="DN")  # join single part polygons with same ID
@@ -724,7 +728,6 @@ def get_floworder():
     sub_shape = gpd.read_file('output/gis/subbasins.gpkg')
 
     # remove also the subbasins where the traveltime didn't work. these are usually within the buffer
-    print("Checking all the subbasins for their size. If 40 % NaN, we remove it")
     for id in sub_ids:
         basin = rxr.open_rasterio(f'output/basins/{id}/tt_{id}.tif')
         basin_size = np.count_nonzero(subbasins[0, :, :].values == id)

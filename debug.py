@@ -1,6 +1,6 @@
 import os
 
-import counterfactual_precipitation as cp
+import counterfactual_preparation as cp
 import geopandas as gpd
 import pyproj
 from osgeo import osr
@@ -8,6 +8,9 @@ import wradlib as wrl
 import pandas as pd
 import xarray as xr
 import numpy as np
+
+
+cp.create_basic_files("input/")
 
 # create the files for the projection information
 radolanwkt = """PROJCS["Radolan Projection",
