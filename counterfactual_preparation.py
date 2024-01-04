@@ -20,7 +20,7 @@ from osgeo import gdal, ogr, osr
 #Prepare basic rasters
 #######################
 
-def create_basic_files(input_path):
+def create_basic_files():
     '''
     This is the multiprocessing version. Only difference is that it takes a tuple as input and unpacks it.
     This function makes sure that all necessary files for the traveltime computation are there and otherwise creates
@@ -34,7 +34,7 @@ def create_basic_files(input_path):
 
     fill = 1e31
 
-    if not os.path.exists(f'input/dem.map'):
+    if not os.path.exists('input/dem.map'):
         print("DEM input/dem.map is missing. Cannot proceed.")
         '''
         In case you want to use other rasters you can convert them to PCRaster format like this:
@@ -50,21 +50,21 @@ def create_basic_files(input_path):
         dem_filled = pcr.lddcreatedem(dem, fill, fill, fill, fill)
         pcr.report(dem_filled, f'output/gis/dem_filled.map')
 
-    if not os.path.exists(f'output/gis/flowdir.map'):
+    if not os.path.exists('output/gis/flowdir.map'):
         print('Creating flow direction grid')
         pcr.setclone(f'output/gis/dem_filled.map')
         dem = pcr.readmap(f'output/gis/dem_filled.map')
         flowdir = pcr.lddcreate(dem, fill, fill, fill, fill)
         pcr.report(flowdir, f'output/gis/flowdir.map')
 
-    if not os.path.exists(f'output/gis/accu.map'):
+    if not os.path.exists('output/gis/accu.map'):
         print('Creating accumulation grid')
         pcr.setclone('input/dem.map')
         flowdir = pcr.readmap(f'output/gis/flowdir.map')
         accu = pcr.accuflux(flowdir, 1)
         pcr.report(accu, f'output/gis/accu.map')
 
-    if not os.path.exists(f'output/gis/subbasins.gpkg'):
+    if not os.path.exists('output/gis/subbasins.gpkg'):
         print("Creating subbasin shape file and raster")
         accu = pcr.readmap(f'output/gis/accu.map')
         flowdir = pcr.readmap(f'output/gis/flowdir.map')
@@ -93,7 +93,7 @@ def create_basic_files(input_path):
 
         os.remove(f'output/gis/subbasins_first.gpkg')
 
-    if not os.path.exists(f'output/gis/friction_maidment.map'):
+    if not os.path.exists('output/gis/friction_maidment.map'):
         dem_filled = pcr.readmap(f'output/gis/dem_filled.map')
         accu = pcr.readmap(f'output/gis/accu.map')
         subbasin_raster = pcr.readmap(f'output/gis/subbasins_adjusted.map')
@@ -105,7 +105,7 @@ def create_basic_files(input_path):
                           lower_limit=0.06,
                           upper_limit=3)
 
-    if not os.path.exists(f'output/gis/tt_complete.map'):
+    if not os.path.exists('output/gis/tt_complete.map'):
 
         pcr.setclone(f'output/gis/dem_filled.map')
         flowdir = pcr.readmap(f'output/gis/flowdir.map')
@@ -127,7 +127,7 @@ def create_basic_files(input_path):
         pcr.report(tt_complete, f'output/gis/tt_complete.map')
 
     if not os.path.exists(
-            f'output/gis/soil_landuse_classes.gpkg'):
+            'output/gis/soil_landuse_classes.gpkg'):
         print(f"{datetime.datetime.now()} Creating soil landuse shape file for curve number method")
         make_cn_soil_landuse_shapefile(input_path)
 
@@ -219,10 +219,9 @@ def make_cn_soil_landuse_shapefile(input_path):
 
 
 
-def get_stream_order(input_path, save=True):
+def get_stream_order(save=True):
     '''
     Creates and saves the streams and their order (Strahler) to raster
-    :param input_path: str, path to input file folder
     :param save: save the stream grid
     :return: pcraster._pcraster.Field containing the streams and their order
     '''

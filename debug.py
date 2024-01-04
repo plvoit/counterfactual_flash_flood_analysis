@@ -1,6 +1,6 @@
 import os
-
 import counterfactual_preparation as cp
+import counterfactual_discharge_analysis as cda
 import geopandas as gpd
 import pyproj
 from osgeo import osr
@@ -8,10 +8,44 @@ import wradlib as wrl
 import pandas as pd
 import xarray as xr
 import numpy as np
+import shutil
 
 
-cp.create_basic_files("input/")
+subbasins = gpd.read_file('output/gis/subbasins_info.gpkg')
+subbasins = subbasins.loc[subbasins.cum_upstream_area < 750, :]
+subbasin_list = subbasins.sub_id.to_list()
+subbasin_list.append(-999)
+nw_jul21 = xr.open_dataset('input/nw_jul21.nc')
+if not os.path.exists('output/analysis'):
+    os.mkdir('output/analysis')
 
+if not os.path.exists('output/analysis/nw_jul21'):
+    os.mkdir('output/analysis/nw_jul21')
+
+for id in subbasin_list:
+    print(f'Modelled discharge for counterfactual {id}')
+    event = cda.Event("nw_jul21", id, discharge_df=None, event_ncdf=nw_jul21)
+    event.discharge.to_csv(f'output/discharge/nw_jul21/dis_sub{id}.gz', compression='gzip', index=False)
+    event.analysis_df.to_csv(f'output/analysis/nw_jul21/analysis_sub{id}.gz', compression='gzip', index=False)
+
+
+subs = gpd.read_file("output/gis/subbasins_info.gpkg")
+
+for i in subs.sub_id:
+    rain = pd.read_csv(f"output/precipitation/nw_jul21_sub{i}.gz")
+
+    if len(rain.columns) != 57:
+        print(f'{i} incomplete')
+
+
+#are the rainseries complete? Was the whole area covered?
+
+
+
+event_ncdf = xr.open_dataset("input/nw_jul21.nc")
+event = cda.Event("nw_jul21", -999, discharge_df=None, event_ncdf=event_ncdf)
+dis = event.discharge
+dis.max()
 # create the files for the projection information
 radolanwkt = """PROJCS["Radolan Projection",
     GEOGCS["Radolan Coordinate System",
