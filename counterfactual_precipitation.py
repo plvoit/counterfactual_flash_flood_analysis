@@ -16,9 +16,12 @@ from shapely.geometry import Point
 #######################
 def move_event(event, new_centroid, original_centroid):
     '''
+    Moves a rainfall event in space from the old centroid to the new centroid.
     :param event: xarray.DataArray
     :param new_centroid: shapely. point
     :param original_centroid: tuple(x,y)
+
+    returns: xarray.DataArray with new coordinates
     '''
 
     xs = float(new_centroid.x.iloc[0])
@@ -31,17 +34,34 @@ def move_event(event, new_centroid, original_centroid):
     dx = x - xs
     dy = y - ys
 
-    dummy = event
-    dummy = dummy.assign_coords({
-        'x': ('x', dummy['x'].values - dx, dummy.attrs),
-        'y': ('y', dummy['y'].values - dy, dummy.x.attrs)
+    moved_event = event
+    moved_event = moved_event.assign_coords({
+        'x': ('x', moved_event['x'].values - dx, moved_event.attrs),
+        'y': ('y', moved_event['y'].values - dy, moved_event.x.attrs)
     })
 
-    return dummy
+    return moved_event
 
 
 def get_rainseries_from_radklim(subbasin_id, event_id, subbasins_radolanproj, original_event, original_centroid,
                                 radolan_projection, utm_projection, stereo_projection):
+    '''
+    Extracts the rainfall timeseries for the subbasins. The rainfall data is in a array, the subbasins are
+    polygons. To get the mean areal subbasin we use the wradlib library. The following function is based
+    https://docs.wradlib.org/en/latest/notebooks/workflow/recipe5.html. Unlike other packages the extraction of
+    rainfall series for subbasins is quite precise. With the 1 km grid of RADKLIM some cells might cover a subbasin
+    just a little bit. The wradlib algorithm computes the weighted areal average, while most other methods either
+    use the average of all fully included cells, or the average of all cells with an overlap.
+    :param subbasin_id:int, ID of the subbasins
+    :param event_id: str, ID of the event
+    :param subbasins_radolanproj: geopandas.geodataframe.GeoDataFrame, Subbasins in Radolan projection
+    :param original_event: xarray.core.dataarray.DataArray, NetCDF of raionfall data
+    :param original_centroid: tuple, containing the centroid (x,y) of the original event
+    :param radolan_projection: pyproj.crs.crs.CRS, of the RADOLAN projection
+    :param utm_projection: osgeo.osr.SpatialReference of the UTM projection
+    :param stereo_projection:osgeo.osr.SpatialReference of the RADOLAN projection
+    :return: writes csv file with the precipitation time series for all affected basins.
+    '''
 
     if os.path.exists(
             f"output/precipitation/event{event_id}_sub{subbasin_id}.csv"
@@ -176,6 +196,11 @@ def get_rainseries_from_radklim(subbasin_id, event_id, subbasins_radolanproj, or
 
 
 def plot_counterfactual(id):
+    '''
+    Plots the original rainfall event and the counterfactual in its position over Germany.
+    :param id: int, ID of counterfactual to plot.
+    :return: plot
+    '''
 
     radolanwkt = """PROJCS["Radolan Projection",
         GEOGCS["Radolan Coordinate System",
@@ -347,6 +372,11 @@ def get_effective_rainfall_scs(row, cn_table, rain_df):
 
 
 def get_effective_rainfall(sub_id):
+    '''
+    Calculates the effective rainfall from the precipitation timeseries by applying the SCS-Curve number method.
+    :param sub_id: int, ID of the counterfactual to process.
+    :return: writes the effective rainfall time series to file in output/effective_rainfall
+    '''
 
     cn_table = pd.read_csv('output/gis/CN_subbasins_table.csv')
     cn_table.index = cn_table.sub_id
