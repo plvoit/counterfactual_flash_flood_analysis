@@ -381,7 +381,7 @@ def get_effective_rainfall(sub_id):
     cn_table = pd.read_csv('output/gis/CN_subbasins_table.csv')
     cn_table.index = cn_table.sub_id
 
-    print(f"Sub ID {sub_id}")
+    print(f"Counterfactual ID {sub_id}")
 
     rain = pd.read_csv(f'output/precipitation/nw_jul21_sub{sub_id}.gz',
                        compression="gzip")
