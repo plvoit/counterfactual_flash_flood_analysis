@@ -14,7 +14,7 @@ import os
 import rioxarray as rxr
 import geopandas as gpd
 from itertools import combinations
-from osgeo import gdal, ogr, osr
+from osgeo_utils.gdal_polygonize import gdal_polygonize
 
 #######################
 #Prepare basic rasters
@@ -22,13 +22,25 @@ from osgeo import gdal, ogr, osr
 
 def create_basic_files():
     '''
-    This is the multiprocessing version. Only difference is that it takes a tuple as input and unpacks it.
-    This function makes sure that all necessary files for the traveltime computation are there and otherwise creates
-    them. The only two files needed at the beginning are (unfilled) DEM of the region and the raster in the same dimension
-    which contains the mannings-n-values.
+    Following data sets are computed in this step and saved in **output/gis**. These files are the basis for the
+    computation of hydrographs.
 
-    :param input_path: str, path to input file folder
-    :param fill: the fill amount for filling the dem with PCRaster
+    - sink filling is applied to the DEM (*dem_filled.map*)
+    - flow direction grid (*flowdir.map*)
+    - flow accumulation grid (*accu.map*)
+    - raster and shapefile containing the subbasins (*subbasins.gpkg*, *subbasins_adjusted.map*)
+    - raster containing the friction values, needed for traveltime calculation (*friction_maidment.map*)
+    - raster containing the traveltime (in minutes, based on the method by Maidment et al., 1996)
+    of every cell to its respective outlet (*tt_complete.map*)
+    - shapefile containing the curve number values for every basin and soil moisture class
+     (*soil_landuse_classes.gpkg*). This file is derived from the soil map BUEK250 and the landuse
+      (files *buek250_cn_classes.gpkg* and *corine.gpkg*)
+    Outlets are determined by the intersection of streams with the Strahler-oder 7 upwards with the functions
+    cf.create_outlet_raster and cf.find_intersects and stored in the raster "outlets.map".
+
+    Then outlet and flow direction raster are used to delineate the subbasins. Very small subbasins (< 0.45 km²)
+     are removed with the function `counterfactual_functions.remove_small_subbasins`.
+
     :return: creates and writes all the necessary files for the calculation hydrographs
     '''
 
@@ -37,9 +49,9 @@ def create_basic_files():
     if not os.path.exists('input/dem.map'):
         print("DEM input/dem.map is missing. Cannot proceed.")
         '''
-        In case you want to use other rasters you can convert them to PCRaster format like this:
+        In case you want to use other rasters you can convert them to PCRaster format with GDAL:
         os.system(
-            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem_{main_basin}.tif {input_path}dem_{main_basin}.map'
+            f'gdal_translate -of "PCRaster" -a_srs EPSG:3035 {input_path}dem.tif {input_path}dem.map'
         )
         '''
 
@@ -69,7 +81,7 @@ def create_basic_files():
         accu = pcr.readmap(f'output/gis/accu.map')
         flowdir = pcr.readmap(f'output/gis/flowdir.map')
 
-        s_order = get_stream_order(input_path, save=True)
+        s_order = get_stream_order(save=True)
         outlets, outlet_array = create_outlet_raster(s_order, accu)
 
         subbasins = pcr.subcatchment(flowdir, pcr.nominal(outlets))
@@ -80,8 +92,11 @@ def create_basic_files():
         pcr.report(subbasins_raster, f'output/gis/subbasins_adjusted.map')
 
         #Polygons from raster
-        os.system(
-            f'gdal_polygonize.py output/gis/subbasins_adjusted.map -f "GPKG" output/gis/subbasins_first.gpkg'
+        status_code = gdal_polygonize(
+            src_filename="output/gis/subbasins_adjusted.map",
+            band_number=1,
+            dst_filename="output/gis/subbasins_first.gpkg",
+            driver_name="GPKG"
         )
 
         subs = gpd.read_file(f'output/gis/subbasins_first.gpkg')
@@ -98,10 +113,9 @@ def create_basic_files():
         accu = pcr.readmap(f'output/gis/accu.map')
         subbasin_raster = pcr.readmap(f'output/gis/subbasins_adjusted.map')
         print("Making maidment friction map")
-        slopearea = make_slopearea_raster(dem_filled, accu, input_path)
+        slopearea = make_slopearea_raster(dem_filled, accu)
         make_friction_map(subbasin_raster,
                           slopearea,
-                          input_path,
                           lower_limit=0.06,
                           upper_limit=3)
 
@@ -129,10 +143,10 @@ def create_basic_files():
     if not os.path.exists(
             'output/gis/soil_landuse_classes.gpkg'):
         print(f"{datetime.datetime.now()} Creating soil landuse shape file for curve number method")
-        make_cn_soil_landuse_shapefile(input_path)
+        make_cn_soil_landuse_shapefile()
 
 
-def make_slopearea_raster(dem, accu, input_path):
+def make_slopearea_raster(dem, accu):
     '''
     Creates the slopearea raster which is needed to make the friction raster
     :param dem: pcraster._pcraster.Field, filled DEM
@@ -152,7 +166,7 @@ def make_slopearea_raster(dem, accu, input_path):
     return slopearea
 
 
-def make_friction_map(basin_raster, slopearea, input_path,
+def make_friction_map(basin_raster, slopearea,
                       lower_limit, upper_limit):
     '''
     Calculate the friction map for all the subbasins accrodin to the method of Maidment et al. (1996)
@@ -160,7 +174,6 @@ def make_friction_map(basin_raster, slopearea, input_path,
     :param slopearea: pcraster._pcraster.Field: the slopearea raster computed by the function make_slopearea_raster. Slopearea is the slope of a
     cell divided by its accumulation value.
 
-    :param input_path: string, path to the folder containing the rasters
     :param lower_limit: lower limit of the velocity value.
     :param upper_limit: upper limit of the velocity value
     :return: writes a pcraster._pcraster.Field containing the friction values which are needed for the computation of
@@ -185,26 +198,22 @@ def make_friction_map(basin_raster, slopearea, input_path,
     pcr.report(friction, f"output/gis/friction_maidment.map")
 
 
-def make_cn_soil_landuse_shapefile(input_path):
+def make_cn_soil_landuse_shapefile():
     '''
-    Creates a shapefile with Curvenumbers for the whole main basin from a landuse shapefile containing CORINE codes
+    Creates a shapefile with curvenumbers for the whole main basin from a landuse shapefile containing CORINE codes
     and a soil shapefile which contains soils classes.
     This shapefile will be used to calculate the direct runoff with the SCS-CN method.
-    :param ger_main_basins_shape: shapefile which contains the main basins of Germany
-    :param ger_soils_shape: german wide soil classes (A,B,C,D) shapefile. This was derived manually from the BUEK250
-    :param landuse_shape: Corine landuse codes for the main basins (shapefile)
-    :param cn_codes: file contains the keys for the translation of CORINE codes into CN landuse codes (four for each
-    landuse class, for each class four soil types)
+
     :return: writes  a shapefile which then can be used for calculation of direct runoff via the SCS-CN method
     '''
 
     soils_shape = gpd.read_file(
-        f'{input_path}buek250_cn_classes.gpkg')
+        'input/buek250_cn_classes.gpkg')
 
-    cn_codes = pd.read_csv(f'{input_path}scs.csv',
+    cn_codes = pd.read_csv('input/scs.csv',
                            sep='\t')
 
-    landuse = gpd.read_file(f'{input_path}corine.gpkg')
+    landuse = gpd.read_file('input/corine.gpkg')
     landuse.CLC18 = landuse.CLC18.astype(int)
     landuse = pd.merge(landuse, cn_codes, on="CLC18")
     landuse.rename(columns={" SCS_B": "SCS_B"}, inplace=True)
@@ -588,7 +597,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
     The coordinates of the subbasin outlet, as well as the curve number for the subbasin is stored together with the
     hydrograph in output/basins/xxx.
     The hydrographs are plotted and stored in output/giuh_plot.
-    A table of curve numbers for the al basins contained in basin_list is stored in
+    A table of curve numbers for all basins contained in basin_list is stored in
     output/gis/CN_subbasins_table.csv
     These files are needed later for hydrological modelling.
     This function calls get_giuh and get_cn_df
@@ -662,7 +671,7 @@ def hydrograph_and_cn_for_subbasins(subbasin_list, plot_giuh=True):
 def get_floworder():
     '''
     For each subbasin, it is checked into which subbasin it flows using the outlet, and the flow direction at this point.
-    Subbasins where the calculation of the traveltime was not succesful (these are usually subbasins which are on the
+    Subbasins where the calculation of the traveltime was not successful (these are usually subbasins which are on the
     sides and situated in the buffer) are removed and a new shapefile ("subbasins_info.shp) is written.
     Then the network is analysed: Subbasins which don't have an inflow are head basins and have the order "1". All the
     basins which have as inflow just head catchments get the order "2" we iterate through this process until we found
@@ -859,10 +868,6 @@ def get_floworder():
 
     just_table = gdf.drop("geometry", axis=1)
     just_table.to_csv(f'output/gis/subbasins_info_table.csv')
-
-#######################
-#Extract rainfall data
-#######################
 
 
 
