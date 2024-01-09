@@ -4,9 +4,10 @@ Supplementary model code for the manuscript:
 
 **Voit, P. ; Heistermann, M.: A downward counterfactual analysis of flash floods in Germany**
 
-This repository contains the full workflow, derivation of hydrographs and the hydrological model for quick runoff.
-
 https://nhess.copernicus.org/preprints/nhess-2023-224/
+
+This repository contains the full workflow, derivation of hydrographs and the hydrological model for quick runoff.
+DOI: 10.5281/zenodo.6556463
 
 Contact: [voit@uni-potsdam.de](voit@uni-potsdam.de)
 
