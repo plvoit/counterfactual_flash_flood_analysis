@@ -1,9 +1,3 @@
-'''
-Paul Voit 21 Dec 2023
-THis version is written to work with GPKG-files to process Germany as a whole
-This script contains all the functions which are used in the workflow of deriving the hydrographs for subbasins
-'''
-
 import pandas as pd
 import pcraster as pcr
 import numpy as np

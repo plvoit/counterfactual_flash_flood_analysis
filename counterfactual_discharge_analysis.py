@@ -4,18 +4,12 @@ import numpy as np
 import geopandas as gpd
 import xarray as xr
 import os
-import pcraster as pcr
-import rioxarray as rxr
-from scipy.signal import find_peaks
-import matplotlib.patches as mpatches
-import matplotlib.dates as mdates
-from itertools import combinations
-from datetime import timedelta
+
 
 class Event:
     '''
     This class handles all the geodata, hydrographs and rainfall time series to compute quick runoff and
-    analyse the results. Additionally there also some plotting functions
+    analyse the results. Additionally, there also some plotting functions
     '''
     def __init__(self,
                  event_id,
@@ -186,7 +180,6 @@ class Event:
 
         else:
             inflow_basins = inflow_basins.strip("[]").split(",")
-            # inflow_basins = [int(i) for i in inflow_basins]
             inflow_basin_list.extend(inflow_basins)
 
             for i in inflow_basins:
@@ -196,10 +189,6 @@ class Event:
                                                level_list,
                                                level=level + 1)
 
-        # add the starting point for the search
-        # inflow_basin_list.append(id)
-        # level_list = list(np.array(level_list) + 1)
-        # level_list.append(0)
 
         return inflow_basin_list, level_list
 
@@ -307,7 +296,7 @@ class Event:
         return ratio
 
 
-    def direct_runoff_main_basin(self, threshold=750, use_convolve=True):
+    def direct_runoff_main_basin(self, threshold=750):
         '''
         routes the rainfall through the main basin.
         Step 1: Superposition of rainfall for each subbasin and each subbasin.
@@ -320,7 +309,6 @@ class Event:
 
         :param threshold: size threshold of basins (km2) up to which discharge should be computed. For large basins the
         results of hydrograph based modelling are very uncertain.
-        use_convolve: whether to use numpy.convolve or not. Seems to speed up the computation.
 
         returns: writes a dataframe containing the discharge time series for every subbasin.
         '''
@@ -358,26 +346,10 @@ class Event:
             '''
             if len(uh) > 480:
                 uh = uh.loc[:480, :]
-                # logger.info(f"Shortend unit hydrograph of subbasin {sub_id} to five days.")
 
-            a = np.zeros((len(rain), (len(rain) * count_increment + len(uh))))
-            counter = 0  # because self.rain_and_xwei is 1h resolution but we want the discharge in 15min resolution we have to use this counter
-            # to insert the resulting discharge of one hour in the right position
 
-            if use_convolve:
-                eff_rain_convolve = rain.loc[:,
-                                    sub_id].values / 4  # this bit could be one once and not for every column like here
-                a = np.convolve(np.repeat(eff_rain_convolve, 4), uh.loc[:, "discharge_m3/s"].to_numpy())
-
-            else:
-                for i in range(len(rain)):
-                    discharge = rain.loc[
-                        i, sub_id] * uh.loc[:, "discharge_m3/s"].to_numpy()
-                    a[i, counter:(counter + len(uh))] = discharge
-                    counter = counter + count_increment
-
-                a = a.sum(axis=0).round(1)
-
+            eff_rain_convolve = rain.loc[:, sub_id].values / 4
+            a = np.convolve(np.repeat(eff_rain_convolve, 4), uh.loc[:, "discharge_m3/s"].to_numpy())
 
             dis_df.loc[0:a.shape[0] - 1, str(sub_id)] = a
 
@@ -390,7 +362,6 @@ class Event:
 
         for level in levels[1:int(highest_level + 1)]:
 
-            # print(f'Flow order {level}')
             dummy = self.floworder.loc[self.floworder.order == level, :]
             dummy = dummy.loc[dummy.sub_id.isin(col_names), :]
 
@@ -402,14 +373,12 @@ class Event:
                 inflow_basins = inflow_basins[0].strip("[]").split(",")
                 inflow_basins = [int(i) for i in inflow_basins]
 
-                # print(f"Level: {level}, Sub_ID: {sub_id}, inflow_basins: {len(inflow_basins)}")
-
                 if str(sub_id) not in dis_df.columns:
                     '''
-                    Some basins recieve no rain during the event, which is why they are not listed in the effective rainfall
-                    dataframe. These basins might recieve flow from upstream basins though, which is why they need! to be
+                    Some basins receive no rain during the event, which is why they are not listed in the effective rainfall
+                    dataframe. These basins might receive flow from upstream basins though, which is why they need to be
                     added here.
-                    This solution below is more efficient even though it seems a but awkward.
+                    This solution below is more efficient even though it seems a bit awkward.
                     The way I did it before, threw performance warnings
                     '''
                     new_column = dis_df.iloc[:, 3].copy()
@@ -432,7 +401,7 @@ class Event:
                         current basin. This results in the variable add_at_position.
                         Because the dataframe has a given length, we have to figure out exactly where to add and not to 
                         create nan
-                        We add all the discharge from upstream but we have to shoten this  series in the  end, so it
+                        We add all the discharge from upstream but we have to shorten this  series in the  end, so it
                         still fits into the dataframe
                         '''
 
@@ -441,12 +410,6 @@ class Event:
                             add_at_position).fillna(0)
                         dis_df[str(
                             sub_id)] = dis_df[str(sub_id)] + shifted_discharge
-
-        # not sure why there are still columns with no discharge at all. Probably because the old rainseries where derived from an unfiltered shapefile
-        #deactivated this bit because then these basins were missing in the analysis dataframe
-        # dis_df = dis_df.loc[:, (dis_df != 0).any(
-        #     axis=0)]  # drop all columns with just zeros
-        # logger.info(f'Succes discharge: event {event_id}, center_sub: {center_sub_id}')
 
         if not os.path.exists('output/discharge'):
             os.mkdir('output/discharge')
